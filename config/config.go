@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	BloXroute BloXrouteConfig `json:"bloxroute"`
+	WSLIST    []string        `json:"wslist"`
 }
 
 type BloXrouteConfig struct {
