@@ -56,14 +56,8 @@ func (s *SubcriberBSCBloxroute) SubcriberService(subcribeMethod string) error {
 		return fmt.Errorf("failed to send subscribe request: %w", err)
 	}
 
-	log.Printf("📤 Sent subscribe request: method=%s, network=%s", subcribeMethod, s.config.BlockchainNetwork)
-
-	// 读取订阅响应
-	var response types.JsonRPCResponse
-	err = s.conn.ReadJSON(&response)
-	if err != nil {
-		return fmt.Errorf("failed to read subscribe response: %w", err)
-	}
+	log.Printf("📤 Sent subscribe request: method=%s, network=%s, include=%v", subcribeMethod, s.config.BlockchainNetwork, s.config.Include)
+	log.Printf("✅ Subscription request sent, waiting for stream data...")
 
 	return nil
 }

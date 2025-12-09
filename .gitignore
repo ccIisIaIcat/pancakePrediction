@@ -2,3 +2,4 @@ config.json
 cmd/**/*.exe
 cmd/**/*
 !cmd/**/*.*
+strategy_analysis
