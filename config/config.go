@@ -7,6 +7,7 @@ import (
 )
 
 type Config struct {
+	ChainID       int64           `json:"chainID"`
 	BloXroute     BloXrouteConfig `json:"bloxroute"`
 	WebsocketList []string        `json:"wslist"`
 	RPCList       []string        `json:"rpcList"`
