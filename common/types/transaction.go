@@ -2,18 +2,18 @@ package types
 
 // Transaction Bloxroute traceBlocks 流中的交易结构
 type Transaction struct {
-	From     string            `json:"from"`
-	Gas      string            `json:"gas"`
-	GasPrice string            `json:"gasPrice"`
-	Hash     string            `json:"hash"`
-	Input    string            `json:"input"`
-	Nonce    string            `json:"nonce"`
-	Value    string            `json:"value"`
-	V        string            `json:"v"`
-	R        string            `json:"r"`
-	S        string            `json:"s"`
-	To       string            `json:"to"`
-	Logs     []Log             `json:"logs"`
+	From      string                       `json:"from"`
+	Gas       string                       `json:"gas"`
+	GasPrice  string                       `json:"gasPrice"`
+	Hash      string                       `json:"hash"`
+	Input     string                       `json:"input"`
+	Nonce     string                       `json:"nonce"`
+	Value     string                       `json:"value"`
+	V         string                       `json:"v"`
+	R         string                       `json:"r"`
+	S         string                       `json:"s"`
+	To        string                       `json:"to"`
+	Logs      []Log                        `json:"logs"`
 	StateDiff map[string]map[string]string `json:"stateDiff"`
 }
 
@@ -26,9 +26,9 @@ type Log struct {
 
 // TraceBlockNotification Bloxroute traceBlocks 流通知
 type TraceBlockNotification struct {
-	JSONRPC string            `json:"jsonrpc"`
-	Method  string            `json:"method"`
-	Params  TraceBlockParams  `json:"params"`
+	JSONRPC string           `json:"jsonrpc"`
+	Method  string           `json:"method"`
+	Params  TraceBlockParams `json:"params"`
 }
 
 // TraceBlockParams traceBlocks 参数
@@ -48,6 +48,7 @@ type BlockTrace struct {
 
 // BlockHeader 区块头信息
 type BlockHeader struct {
+	Hash         string `json:"hash"` // 区块哈希
 	ParentHash   string `json:"parentHash"`
 	Sha3Uncles   string `json:"sha3Uncles"`
 	Miner        string `json:"miner"`

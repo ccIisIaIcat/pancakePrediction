@@ -3,3 +3,4 @@ cmd/**/*.exe
 cmd/**/*
 !cmd/**/*.*
 strategy_analysis
+logprocess_2025-12-13.log

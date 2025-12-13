@@ -9,7 +9,7 @@ type EthSubscriptionNotification struct {
 
 // EthSubscriptionParams 订阅参数
 type EthSubscriptionParams struct {
-	Subscription string `json:"subscription"`
+	Subscription string    `json:"subscription"`
 	Result       LogResult `json:"result"`
 }
 
@@ -26,3 +26,22 @@ type LogResult struct {
 	TransactionHash  string   `json:"transactionHash"`
 	TransactionIndex string   `json:"transactionIndex"`
 }
+
+// BlockHeaderNotification 区块头订阅通知
+type BlockHeaderNotification struct {
+	JSONRPC string            `json:"jsonrpc"`
+	Method  string            `json:"method"`
+	Params  BlockHeaderParams `json:"params"`
+}
+
+// BlockHeaderParams 区块头订阅参数
+type BlockHeaderParams struct {
+	Subscription string      `json:"subscription"`
+	Result       BlockHeader `json:"result"`
+}
+
+// // BlockHeader 区块头(仅包含必要字段)
+// type BlockHeader struct {
+// 	Number string `json:"number"` // 十六进制区块号
+// 	Hash   string `json:"hash"`   // 区块哈希
+// }
