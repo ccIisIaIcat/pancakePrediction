@@ -15,6 +15,7 @@ import (
 	"github.com/ccIisIaIcat/pancakePrediction/common/types"
 	"github.com/ccIisIaIcat/pancakePrediction/config"
 	"github.com/ccIisIaIcat/pancakePrediction/contracts"
+	"github.com/ccIisIaIcat/pancakePrediction/mail"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -40,15 +41,19 @@ type PancakeStrategy struct {
 	currentEpoch uint64                 // 当前活跃的epoch
 
 	// 策略配置
-	config     *config.StrategyConfig
-	privateKey *ecdsa.PrivateKey // 私钥(用于签名交易)
-	myAddress  common.Address    // 我的地址
-	nonce      uint64            // 当前 nonce（缓存）
-	rpcURL     string            // RPC URL（用于获取 nonce）
+	config      *config.StrategyConfig
+	privateKey  *ecdsa.PrivateKey // 私钥(用于签名交易)
+	myAddress   common.Address    // 我的地址
+	nonce       uint64            // 当前 nonce（缓存）
+	rpcURL      string            // RPC URL（用于获取 nonce）
+	rpcList     []string          // 所有 RPC URL列表（用于发送交易）
+	riskManager *RiskManager      // 风控管理器
+	mailSender  *mail.MailSender  // 邮件发送器
+	mailTo      []string          // 邮件接收者列表
 }
 
 // NewLogProcessor 创建日志处理器
-func NewPancakeStrategy(cacheExpiry time.Duration, strategyConfig *config.StrategyConfig, privateKeyHex string, rpcURL string) (*PancakeStrategy, error) {
+func NewPancakeStrategy(cacheExpiry time.Duration, strategyConfig *config.StrategyConfig, privateKeyHex string, rpcURL string, rpcList []string, mailConfig *config.MailConfig) (*PancakeStrategy, error) {
 	// 解析合约 ABI
 	contractABI, err := abi.JSON(strings.NewReader(contracts.PancakePredictionMetaData.ABI))
 	if err != nil {
@@ -69,6 +74,37 @@ func NewPancakeStrategy(cacheExpiry time.Duration, strategyConfig *config.Strate
 	}
 	myAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 
+	// 创建风控管理器
+	riskManager, err := NewRiskManager(
+		strategyConfig.RiskControl.MaxBetAmount,
+		strategyConfig.RiskControl.MinBetAmount,
+		strategyConfig.RiskControl.MaxTotalBets,
+		strategyConfig.RiskControl.MaxConcurrentBets,
+		strategyConfig.RiskControl.MinBalance,
+		strategyConfig.RiskControl.StopLoss,
+		strategyConfig.RiskControl.DailyLossLimit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create risk manager: %w", err)
+	}
+
+	// 创建邮件发送器
+	var mailSender *mail.MailSender
+	var mailTo []string
+	if mailConfig != nil && mailConfig.From != "" && mailConfig.AuthCode != "" {
+		mailSender = mail.NewMailSender(
+			"smtp.qq.com",
+			465,
+			mailConfig.From,
+			mailConfig.AuthCode,
+			"Pancake Strategy Bot",
+		)
+		mailTo = mailConfig.To
+		log.Printf("📧 Mail notification enabled: %s -> %v", mailConfig.From, mailTo)
+	} else {
+		log.Printf("⚠️ Mail notification disabled (no mail config)")
+	}
+
 	p := &PancakeStrategy{
 		txHashCache: make(map[string]time.Time),
 		cacheExpiry: cacheExpiry,
@@ -78,7 +114,11 @@ func NewPancakeStrategy(cacheExpiry time.Duration, strategyConfig *config.Strate
 		privateKey:  privateKey,
 		myAddress:   myAddress,
 		rpcURL:      rpcURL,
+		rpcList:     rpcList,
 		nonce:       0, // 初始化时会更新
+		riskManager: riskManager,
+		mailSender:  mailSender,
+		mailTo:      mailTo,
 	}
 	p.eventCallback = p.defaultEventCallback
 

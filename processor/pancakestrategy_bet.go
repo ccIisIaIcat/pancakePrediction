@@ -1,12 +1,16 @@
 package processor
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/big"
+	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 )
 
@@ -73,6 +77,12 @@ func (p *PancakeStrategy) shouldBet(round *RoundState, currentBlock uint64) bool
 
 // executeBet 执行下注（构造和签名交易）
 func (p *PancakeStrategy) executeBet(round *RoundState, currentBlock uint64) {
+	// 检查是否已经下注过
+	if round.HasBet {
+		log.Printf("⚠️ Already bet on epoch %d, skipping", round.Epoch)
+		return
+	}
+
 	// 计算下注金额
 	minorityAmount := round.BullAmount
 	if round.MinoritySide == "Bear" {
@@ -86,8 +96,32 @@ func (p *PancakeStrategy) executeBet(round *RoundState, currentBlock uint64) {
 
 	betAmount, _ := betAmountFloat.Int(nil)
 
-	log.Printf("💰 BET OPPORTUNITY: epoch=%d, block=%d, side=%s, ratio=%.2f, betAmount=%s",
+	log.Printf("💰 BET OPPORTUNITY: epoch=%d, block=%d, side=%s, ratio=%.2f, calculatedAmount=%s",
 		round.Epoch, currentBlock, round.MinoritySide, round.Ratio, betAmount.String())
+
+	// 风控检查和金额调整
+	adjustedAmount, canBet, reason := p.riskManager.AdjustBetAmount(p, betAmount)
+	if !canBet {
+		log.Printf("🚫 Bet blocked by risk control: %s", reason)
+
+		p.logger.Warn("Bet Blocked by Risk Control",
+			zap.Uint64("epoch", round.Epoch),
+			zap.String("reason", reason),
+			zap.String("calculatedAmount", betAmount.String()))
+
+		return
+	}
+
+	// 使用调整后的金额
+	betAmount = adjustedAmount
+	log.Printf("✅ Final bet amount after risk control: %s", betAmount.String())
+
+	// 1. 发送邮件：通过风控判断，准备下注
+	calculatedBetAmount := new(big.Int).Set(betAmount)
+	if adjustedAmount.Cmp(betAmount) != 0 {
+		calculatedBetAmount, _ = betAmountFloat.Int(nil) // 原始计算金额
+	}
+	p.notifyBetOpportunity(round.Epoch, round.MinoritySide, round.Ratio, calculatedBetAmount, betAmount, currentBlock)
 
 	// 构造交易
 	signedTx, err := p.buildAndSignBetTx(round.Epoch, round.MinoritySide, betAmount)
@@ -96,6 +130,8 @@ func (p *PancakeStrategy) executeBet(round *RoundState, currentBlock uint64) {
 		return
 	}
 
+	txHash := signedTx.Hash().Hex()
+
 	// 记录到 logger
 	p.logger.Info("Bet Transaction Signed",
 		zap.Uint64("epoch", round.Epoch),
@@ -103,15 +139,35 @@ func (p *PancakeStrategy) executeBet(round *RoundState, currentBlock uint64) {
 		zap.String("betAmount", betAmount.String()),
 		zap.Float64("ratio", round.Ratio),
 		zap.Uint64("currentBlock", currentBlock),
-		zap.String("txHash", signedTx.Hash().Hex()))
+		zap.String("txHash", txHash))
 
-	log.Printf("✅ Signed Tx: %s (NOT SENT YET)", signedTx.Hash().Hex())
+	// 发送交易到所有 RPC 节点
+	success := p.sendBetTransaction(signedTx)
+	if !success {
+		log.Printf("❌ Failed to send bet transaction for epoch %d", round.Epoch)
+		return
+	}
 
-	// TODO: 这里暂时不发送交易，只打印
-	// 后续需要：
-	// 1. 发送交易到所有 RPC 节点
-	// 2. 跟踪交易状态
-	// 3. 标记该 epoch 已下注，避免重复下注
+	// 标记已下注
+	round.HasBet = true
+	round.BetTxHash = txHash
+	round.BetSide = round.MinoritySide
+	round.BetAmount = betAmount
+	round.BetConfirmed = false
+
+	// 递增 nonce
+	p.incrementNonce()
+
+	// 通知风控管理器
+	p.riskManager.OnBetPlaced(betAmount)
+
+	log.Printf("✅ Bet transaction sent: epoch=%d, txHash=%s", round.Epoch, txHash)
+
+	// 2. 发送邮件：交易已发送
+	p.notifyBetSent(round.Epoch, round.MinoritySide, betAmount, txHash)
+
+	// 启动交易确认追踪
+	go p.trackTransaction(round.Epoch, txHash)
 }
 
 // buildAndSignBetTx 构造并签名下注交易
@@ -138,9 +194,9 @@ func (p *PancakeStrategy) buildAndSignBetTx(epoch uint64, side string, betAmount
 	tx := ethtypes.NewTransaction(
 		nonce,
 		common.HexToAddress(p.config.ContractAddress),
-		betAmount,                       // value
-		p.config.GasLimitBet,            // gas limit
-		big.NewInt(p.config.GasPrice),   // gas price
+		betAmount,                     // value
+		p.config.GasLimitBet,          // gas limit
+		big.NewInt(p.config.GasPrice), // gas price
 		data,
 	)
 
@@ -154,4 +210,144 @@ func (p *PancakeStrategy) buildAndSignBetTx(epoch uint64, side string, betAmount
 	}
 
 	return signedTx, nil
+}
+
+// sendBetTransaction 并发发送交易到所有 RPC 节点
+func (p *PancakeStrategy) sendBetTransaction(signedTx *ethtypes.Transaction) bool {
+	// 获取所有 RPC URL
+	if len(p.rpcList) == 0 {
+		log.Printf("❌ No RPC endpoints configured")
+		return false
+	}
+
+	// 使用 WaitGroup 和 channel 来并发发送
+	var wg sync.WaitGroup
+	successChan := make(chan bool, len(p.rpcList))
+
+	for i, rpcURL := range p.rpcList {
+		wg.Add(1)
+		go func(index int, url string) {
+			defer wg.Done()
+
+			client, err := ethclient.Dial(url)
+			if err != nil {
+				log.Printf("⚠️ RPC #%d [%s] dial failed: %v", index, url, err)
+				successChan <- false
+				return
+			}
+			defer client.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err = client.SendTransaction(ctx, signedTx)
+			if err != nil {
+				log.Printf("⚠️ RPC #%d [%s] send failed: %v", index, url, err)
+				successChan <- false
+				return
+			}
+
+			log.Printf("✅ RPC #%d [%s] sent successfully", index, url)
+			successChan <- true
+		}(i, rpcURL)
+	}
+
+	// 等待所有 goroutine 完成
+	wg.Wait()
+	close(successChan)
+
+	// 只要有一个成功就算成功
+	for success := range successChan {
+		if success {
+			return true
+		}
+	}
+
+	return false
+}
+
+// trackTransaction 追踪交易确认状态
+func (p *PancakeStrategy) trackTransaction(epoch uint64, txHash string) {
+	log.Printf("🔍 Starting to track transaction: epoch=%d, txHash=%s", epoch, txHash)
+
+	// 最多追踪 5 分钟
+	timeout := time.After(5 * time.Minute)
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			log.Printf("⏰ Transaction tracking timeout: epoch=%d, txHash=%s", epoch, txHash)
+			return
+
+		case <-ticker.C:
+			// 尝试从任意 RPC 节点获取交易收据
+			receipt, err := p.getTransactionReceipt(txHash)
+			if err != nil {
+				// 还没上链，继续等待
+				continue
+			}
+
+			// 检查交易状态
+			if receipt.Status == 1 {
+				log.Printf("✅ Transaction confirmed: epoch=%d, txHash=%s, blockNumber=%d",
+					epoch, txHash, receipt.BlockNumber.Uint64())
+
+				// 更新 RoundState
+				p.mu.Lock()
+				if round, exists := p.rounds[epoch]; exists {
+					round.BetConfirmed = true
+
+					p.logger.Info("Bet Transaction Confirmed",
+						zap.Uint64("epoch", epoch),
+						zap.String("txHash", txHash),
+						zap.Uint64("blockNumber", receipt.BlockNumber.Uint64()),
+						zap.Uint64("gasUsed", receipt.GasUsed))
+				}
+				p.mu.Unlock()
+
+				// 3. 发送邮件：交易确认成功
+				p.notifyBetConfirmed(epoch, txHash, receipt.BlockNumber.Uint64(), true)
+
+				return
+
+			} else {
+				log.Printf("❌ Transaction failed: epoch=%d, txHash=%s", epoch, txHash)
+
+				p.logger.Error("Bet Transaction Failed",
+					zap.Uint64("epoch", epoch),
+					zap.String("txHash", txHash))
+
+				// 3. 发送邮件：交易确认失败
+				p.notifyBetConfirmed(epoch, txHash, receipt.BlockNumber.Uint64(), false)
+
+				// 交易失败，刷新 nonce
+				go p.refreshNonce()
+
+				return
+			}
+		}
+	}
+}
+
+// getTransactionReceipt 从任意可用的 RPC 节点获取交易收据
+func (p *PancakeStrategy) getTransactionReceipt(txHash string) (*ethtypes.Receipt, error) {
+	for _, rpcURL := range p.rpcList {
+		client, err := ethclient.Dial(rpcURL)
+		if err != nil {
+			continue
+		}
+		defer client.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		receipt, err := client.TransactionReceipt(ctx, common.HexToHash(txHash))
+		cancel()
+
+		if err == nil {
+			return receipt, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no receipt found from any RPC")
 }

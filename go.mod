@@ -8,6 +8,7 @@ require (
 	github.com/ethereum/go-ethereum v1.16.7
 	github.com/gorilla/websocket v1.5.3
 	go.uber.org/zap v1.27.1
+	golang.org/x/term v0.30.0
 )
 
 require (

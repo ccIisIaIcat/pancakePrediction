@@ -43,6 +43,14 @@ func (p *PancakeStrategy) handleStartRound(logResult *types.LogResult, eventData
 		CreatedAt:    time.Now(),
 		RoundLocked:  false,
 		RoundEnded:   false,
+		HasBet:       false,
+		BetTxHash:    "",
+		BetSide:      "",
+		BetAmount:    big.NewInt(0),
+		BetConfirmed: false,
+		HasClaimed:   false,
+		LockPrice:    big.NewInt(0),
+		ClosePrice:   big.NewInt(0),
 	}
 
 	// 更新当前 epoch
@@ -178,6 +186,13 @@ func (p *PancakeStrategy) handleLockRound(logResult *types.LogResult, eventData 
 	}
 	epoch := epochBigInt.Uint64()
 
+	// 提取 price
+	price, ok := eventData["price"].(*big.Int)
+	if !ok {
+		log.Printf("⚠️ handleLockRound: invalid price type")
+		price = big.NewInt(0)
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -190,18 +205,20 @@ func (p *PancakeStrategy) handleLockRound(logResult *types.LogResult, eventData 
 
 	// 标记轮次已锁定，不能再下注
 	round.RoundLocked = true
+	round.LockPrice = price
 
 	// 记录到 zap logger
 	p.logger.Info("RoundState Updated",
 		zap.String("action", "LockRound"),
 		zap.Uint64("epoch", epoch),
+		zap.String("lockPrice", price.String()),
 		zap.String("bullAmount", round.BullAmount.String()),
 		zap.String("bearAmount", round.BearAmount.String()),
 		zap.Float64("ratio", round.Ratio),
 		zap.String("minoritySide", round.MinoritySide),
 		zap.Bool("roundLocked", true))
 
-	log.Printf("🔒 LockRound: epoch=%d (locked, no more bets)", epoch)
+	log.Printf("🔒 LockRound: epoch=%d (locked, no more bets), lockPrice=%s", epoch, price.String())
 }
 
 // handleEndRound 处理 EndRound 事件
@@ -215,6 +232,13 @@ func (p *PancakeStrategy) handleEndRound(logResult *types.LogResult, eventData m
 	}
 	epoch := epochBigInt.Uint64()
 
+	// 提取 price (closePrice)
+	price, ok := eventData["price"].(*big.Int)
+	if !ok {
+		log.Printf("⚠️ handleEndRound: invalid price type")
+		price = big.NewInt(0)
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -227,19 +251,25 @@ func (p *PancakeStrategy) handleEndRound(logResult *types.LogResult, eventData m
 
 	// 标记轮次结束
 	round.RoundEnded = true
+	round.ClosePrice = price
 
 	// 记录到 zap logger
 	p.logger.Info("RoundState Updated",
 		zap.String("action", "EndRound"),
 		zap.Uint64("epoch", epoch),
+		zap.String("lockPrice", round.LockPrice.String()),
+		zap.String("closePrice", price.String()),
 		zap.String("bullAmount", round.BullAmount.String()),
 		zap.String("bearAmount", round.BearAmount.String()),
 		zap.Float64("ratio", round.Ratio),
 		zap.String("minoritySide", round.MinoritySide),
 		zap.Bool("roundEnded", true))
 
-	log.Printf("🏁 EndRound: epoch=%d, bull=%s, bear=%s, ratio=%.2f",
-		epoch, round.BullAmount.String(), round.BearAmount.String(), round.Ratio)
+	log.Printf("🏁 EndRound: epoch=%d, bull=%s, bear=%s, ratio=%.2f, lockPrice=%s, closePrice=%s",
+		epoch, round.BullAmount.String(), round.BearAmount.String(), round.Ratio, round.LockPrice.String(), price.String())
+
+	// 检查所有缓存的轮次，尝试 claim 还没 claim 的
+	p.checkAllRoundsForClaim()
 }
 
 // handleClaim 处理 Claim 事件

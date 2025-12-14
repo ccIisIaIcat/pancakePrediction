@@ -50,7 +50,7 @@ func (s *BlockSubscriber) Start(ctx context.Context) {
 			return
 		default:
 			if err := s.connectAndSubscribe(); err != nil {
-				log.Printf("❌ Block connection failed: %v, retrying in 5s...", err)
+				log.Printf("❌ [%s] Block connection failed: %v, retrying in 5s...", s.wsURL, err)
 				time.Sleep(5 * time.Second)
 				continue
 			}
@@ -113,7 +113,7 @@ func (s *BlockSubscriber) readLoop(ctx context.Context) {
 		default:
 			_, message, err := s.conn.ReadMessage()
 			if err != nil {
-				log.Printf("⚠️ Block read error: %v, reconnecting...", err)
+				log.Printf("⚠️ [%s] Block read error: %v, reconnecting...", s.wsURL, err)
 				return
 			}
 
